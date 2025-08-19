@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { io, Socket } from "socket.io-client";
 
-const SOCKET_URL = "http://localhost:5000"; // backend URL
+const SOCKET_URL = "http://localhost:4000"; // backend URL
 
 let socket: Socket;
 
