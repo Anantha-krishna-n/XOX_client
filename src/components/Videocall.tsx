@@ -18,25 +18,6 @@ export default function VideoCall({ socket, roomId }: { socket: Socket; roomId: 
     });
     pcRef.current = pc;
 
-    // Get local media stream
-    const getMedia = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: true, 
-          audio: true 
-        });
-        localStreamRef.current = stream;
-        if (localRef.current) localRef.current.srcObject = stream;
-        
-        // Add all tracks to peer connection
-        stream.getTracks().forEach(track => {
-          pc.addTrack(track, stream);
-        });
-      } catch (err) {
-        console.error("Failed to get local media", err);
-      }
-    };
-
     // Handle remote stream
     pc.ontrack = (event) => {
       if (remoteRef.current && !remoteRef.current.srcObject) {
@@ -54,7 +35,7 @@ export default function VideoCall({ socket, roomId }: { socket: Socket; roomId: 
       }
     };
 
-    // Signaling event handlers
+    // Signaling event handlers (unchanged)
     const handleOffer = async ({ offer, from }: { 
       offer: RTCSessionDescriptionInit; 
       from: string 
@@ -117,10 +98,32 @@ export default function VideoCall({ socket, roomId }: { socket: Socket; roomId: 
     socket.on("webrtc-ice", handleIce);
     socket.on("ready-for-offer", handleReadyForOffer);
 
-    // Initialize
-    getMedia();
+    // Initialize media and signal ready
+    const initMedia = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: true, 
+          audio: true 
+        });
+        localStreamRef.current = stream;
+        if (localRef.current) localRef.current.srcObject = stream;
+        
+        // Add all tracks to peer connection
+        stream.getTracks().forEach(track => {
+          pc.addTrack(track, stream);
+        });
 
-    // Cleanup
+        // New: Signal readiness
+        socket.emit("media-ready", { roomId });
+      } catch (err) {
+        console.error("Failed to get local media", err);
+        // Optional: Fallback (e.g., notify user or proceed without video/audio)
+      }
+    };
+
+    initMedia();
+
+    // Cleanup (unchanged)
     return () => {
       if (pcRef.current) {
         pcRef.current.close();
@@ -135,6 +138,7 @@ export default function VideoCall({ socket, roomId }: { socket: Socket; roomId: 
     };
   }, [socket, roomId]);
 
+  // Toggle functions (unchanged)
   const toggleCamera = () => {
     if (localStreamRef.current) {
       const videoTrack = localStreamRef.current.getVideoTracks()[0];
