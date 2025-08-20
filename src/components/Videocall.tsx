@@ -1,32 +1,51 @@
-
-import { useEffect, useRef, useState } from "react"
-import type { Socket } from "socket.io-client"
+import { useEffect, useRef, useState } from "react";
+import type { Socket } from "socket.io-client";
 
 export default function VideoCall({ socket, roomId }: { socket: Socket; roomId: string }) {
-  const localRef = useRef<HTMLVideoElement | null>(null)
-  const remoteRef = useRef<HTMLVideoElement | null>(null)
-  const pcRef = useRef<RTCPeerConnection | null>(null)
-  const localStreamRef = useRef<MediaStream | null>(null)
+  const localRef = useRef<HTMLVideoElement | null>(null);
+  const remoteRef = useRef<HTMLVideoElement | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const isMediaInitializing = useRef(false); // Track initMedia state
 
-  const [cameraOn, setCameraOn] = useState(true)
-  const [micOn, setMicOn] = useState(true)
-  const [isConnected, setIsConnected] = useState(false)
+  const [cameraOn, setCameraOn] = useState(true);
+  const [micOn, setMicOn] = useState(true);
+  const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
-    if (!socket) return
+    if (!socket) return;
 
+    // Create peer connection
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-    })
-    pcRef.current = pc
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        // Add TURN server for production reliability
+        {
+          urls: "turn:openrelay.metered.ca:80",
+          username: "openrelay.project",
+          credential: "openrelayproject",
+        },
+        {
+          urls: "turn:openrelay.metered.ca:443",
+          username: "openrelay.project",
+          credential: "openrelayproject",
+        },
+      ],
+    });
+    pcRef.current = pc;
 
     // Handle remote stream
     pc.ontrack = (event) => {
       if (remoteRef.current && !remoteRef.current.srcObject) {
-        remoteRef.current.srcObject = event.streams[0]
-        setIsConnected(true)
+        remoteRef.current.srcObject = event.streams[0];
+        setIsConnected(true);
       }
-    }
+    };
+
+    // Debug ICE connection state
+    pc.oniceconnectionstatechange = () => {
+      console.log(`ICE connection state: ${pc.iceConnectionState}`);
+    };
 
     // ICE Candidate handling
     pc.onicecandidate = (event) => {
@@ -34,139 +53,150 @@ export default function VideoCall({ socket, roomId }: { socket: Socket; roomId: 
         socket.emit("webrtc-ice", {
           roomId,
           candidate: event.candidate,
-        })
+        });
       }
-    }
+    };
 
     // Signaling event handlers
     const handleOffer = async ({
       offer,
       from,
     }: {
-      offer: RTCSessionDescriptionInit
-      from: string
+      offer: RTCSessionDescriptionInit;
+      from: string;
     }) => {
-      if (!pcRef.current || from === socket.id) return
+      if (!pcRef.current || from === socket.id) return;
 
       try {
-        await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer))
-        const answer = await pcRef.current.createAnswer()
-        await pcRef.current.setLocalDescription(answer)
-        socket.emit("webrtc-answer", { roomId, answer })
+        await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await pcRef.current.createAnswer();
+        await pcRef.current.setLocalDescription(answer);
+        socket.emit("webrtc-answer", { roomId, answer });
       } catch (err) {
-        console.error("Error handling offer:", err)
+        console.error("Error handling offer:", err);
       }
-    }
+    };
 
     const handleAnswer = async ({
       answer,
       from,
     }: {
-      answer: RTCSessionDescriptionInit
-      from: string
+      answer: RTCSessionDescriptionInit;
+      from: string;
     }) => {
-      if (!pcRef.current || from === socket.id) return
+      if (!pcRef.current || from === socket.id) return;
 
       try {
-        await pcRef.current.setRemoteDescription(new RTCSessionDescription(answer))
+        await pcRef.current.setRemoteDescription(new RTCSessionDescription(answer));
       } catch (err) {
-        console.error("Error handling answer:", err)
+        console.error("Error handling answer:", err);
       }
-    }
+    };
 
     const handleIce = async ({
       candidate,
       from,
     }: {
-      candidate: RTCIceCandidateInit
-      from: string
+      candidate: RTCIceCandidateInit;
+      from: string;
     }) => {
-      if (!pcRef.current || from === socket.id) return
+      if (!pcRef.current || from === socket.id) return;
 
       try {
         if (candidate) {
-          await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate))
+          await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
         }
       } catch (err) {
-        console.error("Error adding ICE candidate:", err)
+        console.error("Error adding ICE candidate:", err);
       }
-    }
+    };
 
     const handleReadyForOffer = async () => {
-      if (!pcRef.current) return
+      if (!pcRef.current || pcRef.current.signalingState === "closed") return;
 
       try {
-        const offer = await pcRef.current.createOffer()
-        await pcRef.current.setLocalDescription(offer)
-        socket.emit("webrtc-offer", { roomId, offer })
+        const offer = await pcRef.current.createOffer();
+        await pcRef.current.setLocalDescription(offer);
+        socket.emit("webrtc-offer", { roomId, offer });
       } catch (err) {
-        console.error("Error creating offer:", err)
+        console.error("Error creating offer:", err);
       }
-    }
+    };
 
     // Setup event listeners
-    socket.on("webrtc-offer", handleOffer)
-    socket.on("webrtc-answer", handleAnswer)
-    socket.on("webrtc-ice", handleIce)
-    socket.on("ready-for-offer", handleReadyForOffer)
+    socket.on("webrtc-offer", handleOffer);
+    socket.on("webrtc-answer", handleAnswer);
+    socket.on("webrtc-ice", handleIce);
+    socket.on("ready-for-offer", handleReadyForOffer);
 
     // Initialize media and signal ready
     const initMedia = async () => {
+      if (isMediaInitializing.current) return; // Prevent multiple initMedia calls
+      isMediaInitializing.current = true;
+
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: true,
-        })
-        localStreamRef.current = stream
-        if (localRef.current) localRef.current.srcObject = stream
+        });
+        localStreamRef.current = stream;
+        if (localRef.current) localRef.current.srcObject = stream;
 
-        // Add all tracks to peer connection
-        stream.getTracks().forEach((track) => {
-          pc.addTrack(track, stream)
-        })
-
-        socket.emit("media-ready", { roomId })
+        // Add tracks only if connection is not closed
+        if (pcRef.current && pcRef.current.signalingState !== "closed") {
+          stream.getTracks().forEach((track) => {
+            pcRef.current!.addTrack(track, stream);
+          });
+          socket.emit("media-ready", { roomId });
+        } else {
+          console.warn("RTCPeerConnection closed before adding tracks");
+          stream.getTracks().forEach((track) => track.stop()); // Clean up stream
+        }
       } catch (err) {
-        console.error("Failed to get local media", err)
+        console.error("Failed to get local media:", err);
+      } finally {
+        isMediaInitializing.current = false;
       }
-    }
+    };
 
-    initMedia()
+    initMedia();
 
     // Cleanup
     return () => {
-      if (pcRef.current) {
-        pcRef.current.close()
+      if (pcRef.current && pcRef.current.signalingState !== "closed") {
+        pcRef.current.close();
+        pcRef.current = null;
       }
       if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((track) => track.stop())
+        localStreamRef.current.getTracks().forEach((track) => track.stop());
+        localStreamRef.current = null;
       }
-      socket.off("webrtc-offer", handleOffer)
-      socket.off("webrtc-answer", handleAnswer)
-      socket.off("webrtc-ice", handleIce)
-      socket.off("ready-for-offer", handleReadyForOffer)
-    }
-  }, [socket, roomId])
+      socket.off("webrtc-offer", handleOffer);
+      socket.off("webrtc-answer", handleAnswer);
+      socket.off("webrtc-ice", handleIce);
+      socket.off("ready-for-offer", handleReadyForOffer);
+    };
+  }, [socket, roomId]);
 
   const toggleCamera = () => {
     if (localStreamRef.current) {
-      const videoTrack = localStreamRef.current.getVideoTracks()[0]
+      const videoTrack = localStreamRef.current.getVideoTracks()[0];
       if (videoTrack) {
-        videoTrack.enabled = !videoTrack.enabled
-        setCameraOn(videoTrack.enabled)
+        videoTrack.enabled = !videoTrack.enabled;
+        setCameraOn(videoTrack.enabled);
       }
     }
-  }
+  };
 
   const toggleMic = () => {
     if (localStreamRef.current) {
-      const audioTrack = localStreamRef.current.getAudioTracks()[0]
+      const audioTrack = localStreamRef.current.getAudioTracks()[0];
       if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled
-        setMicOn(audioTrack.enabled)
+        audioTrack.enabled = !audioTrack.enabled;
+        setMicOn(audioTrack.enabled);
       }
     }
-  }
+  };
 
   return (
     <div className="bg-card rounded-2xl p-6 shadow-xl border border-border backdrop-blur-sm">
@@ -237,5 +267,5 @@ export default function VideoCall({ socket, roomId }: { socket: Socket; roomId: 
         </div>
       </div>
     </div>
-  )
+  );
 }
